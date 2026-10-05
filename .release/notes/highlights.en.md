@@ -1,3 +1,0 @@
-- New farewell message in the demo app
-- Greetings now ignore leading and trailing spaces in names
-- New orders table for the upcoming ordering feature
