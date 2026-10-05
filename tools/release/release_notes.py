@@ -41,6 +41,7 @@ RUNTIME = re.compile(r"(^|/)(Dockerfile[\w.-]*|docker-compose[\w.-]*\.ya?ml|\.nv
 WORKFLOW = re.compile(r"(^|/)\.github/workflows/")
 ENV_USE = re.compile(r"(?:process\.env\.|import\.meta\.env\.|os\.environ\[['\"]|os\.getenv\(['\"]|ENV\[['\"])([A-Z][A-Z0-9_]{2,})")
 GH_SECRET = re.compile(r"\b(?:secrets|vars)\.([A-Z][A-Z0-9_]+)")
+TEST_FILE = re.compile(r"(^|/)(tests?|__tests__|spec|fixtures?)/|[._-](test|spec)\.\w+$|(^|/)test_\w+\.py$")
 CRON = re.compile(r"^\s*-?\s*cron:\s*['\"]")
 
 READINESS_QUESTIONS = """### Decide before releasing
@@ -78,13 +79,13 @@ def next_version(latest, bump):
 
 
 def parse_commits(log):
-    """log: text with records separated by \\x1e and fields by \\x1f (sha, author, subject, body)."""
+    """log: text with records separated by \\x1e and fields by \\x1f (sha, author, email, subject, body)."""
     out = []
     for rec in log.split("\x1e"):
         rec = rec.strip("\n")
         if not rec.strip():
             continue
-        sha, author, subject, body = (rec.split("\x1f") + ["", "", "", ""])[:4]
+        sha, author, email, subject, body = (rec.split("\x1f") + ["", "", "", "", ""])[:5]
         m = CONVENTIONAL.match(subject.strip())
         ctype = m.group("type") if m else "other"
         text = m.group("subject") if m else subject.strip()
@@ -92,7 +93,7 @@ def parse_commits(log):
         breaking = bool(m and m.group("bang")) or "BREAKING CHANGE" in body
         if ctype == "chore" and scope == "release":
             continue
-        out.append({"sha": sha.strip(), "author": author, "type": ctype, "scope": scope,
+        out.append({"sha": sha.strip(), "author": author, "email": email.strip().lower(), "type": ctype, "scope": scope,
                     "text": text, "body": body.strip(), "breaking": breaking})
     return out
 
@@ -154,6 +155,8 @@ def analyze(files, added_lines, commits):
     """Pure function: what in this release needs a human decision or follow-up."""
     env_names, gh_names, crons = set(), set(), 0
     for path, line in added_lines:
+        if TEST_FILE.search(path):  # test code mentions env vars and secrets without needing them in production
+            continue
         for m in ENV_USE.finditer(line):
             env_names.add(m.group(1))
         if WORKFLOW.search(path):
@@ -241,7 +244,7 @@ def prepend_changelog(path, notes_text):
 
 def git_log(since, until):
     rng = f"{since}..{until}" if since else until
-    r = subprocess.run(["git", "log", rng, "--no-merges", "--format=%H%x1f%an%x1f%s%x1f%b%x1e"],
+    r = subprocess.run(["git", "log", rng, "--no-merges", "--format=%H%x1f%an%x1f%ae%x1f%s%x1f%b%x1e"],
                        capture_output=True, text=True, check=True)
     return r.stdout
 
@@ -250,7 +253,11 @@ def cmd_notes(args):
     commits = parse_commits(git_log(args.since, args.until))
     if not commits:
         sys.exit("No commits since the previous release; nothing to release.")
-    authors = sorted({c["author"] for c in commits if c["author"]})
+    by_person = {}
+    for c in commits:  # one entry per person: the same email can appear under different name spellings
+        if c["author"]:
+            by_person.setdefault(c["email"] or c["author"], c["author"])
+    authors = sorted(by_person.values())
     groups = group(commits)
     os.makedirs(args.out_dir, exist_ok=True)
     langs = [x for x in args.order.split(",") if x in ("en", "th")]
