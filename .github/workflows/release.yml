@@ -1,0 +1,218 @@
+# Release from the lower branch (staging, or dev in a dev -> main repo) to main (in a main-only repo, from main):
+#   choose patch / minor / major -> version + bilingual notes (EN + TH) + readiness brief
+#   -> release branch with the version bump and CHANGELOG -> DEPLOY that exact commit
+#   -> only if the deploy succeeded: tag it, PR release branch -> main (merge commit), GitHub Release,
+#      and a post-deploy checklist issue.
+# The tag is created AFTER a successful deploy, so a tag always means "this shipped" and nothing is ever
+# deleted. If the deploy fails only the release branch is removed and main is untouched.
+# Nothing is pushed straight to a protected branch; the back-merge workflow carries the release commit
+# down to staging/dev afterwards.
+#
+# Wire your deploy in `.release/deploy.sh` (gets VERSION, TAG, RELEASE_SHA), or use skip_deploy for repos
+# with nothing to deploy. Optional: `.release/bump.sh` bumps version files (default: package.json);
+# `.release/notes/{summary,highlights,upgrade}.{en,th}.md` add a written summary and upgrade notes (write
+# them with Claude Desktop/Remote/CLI or by hand, merge them to the lower branch first; they are removed in
+# the release commit); `.release/post-deploy-checklist.md` adds project-specific manual checks.
+# Needs the repo setting "Allow GitHub Actions to create and approve pull requests". No API keys.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump
+        type: choice
+        default: patch
+        options: [patch, minor, major]
+      skip_deploy:
+        description: Repo has nothing to deploy (docs, tools)
+        type: boolean
+        default: false
+      dry_run:
+        description: Only show the version, notes and readiness brief in the run summary; change nothing
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false # never cancel a release in flight
+
+env:
+  PROJECT_NAME: ${{ github.event.repository.name }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag: ${{ steps.v.outputs.tag }}
+      branch: ${{ steps.v.outputs.branch }}
+      sha: ${{ steps.branch.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Guard the source branch
+        env:
+          SOURCE: ${{ github.ref_name }}
+        run: |
+          has() { git ls-remote --exit-code --heads origin "$1" >/dev/null 2>&1; }
+          case "$SOURCE" in
+            main)
+              if has staging || has dev; then
+                echo "::error::Run this from the lower branch (staging or dev), not main."; exit 1
+              fi ;; # main-only repo: main is the only branch there is
+            staging|dev) ;;
+            *) echo "::error::Release only from staging or dev (or main in a main-only repo); this ref is $SOURCE."; exit 1 ;;
+          esac
+          git fetch origin main
+          if ! git merge-base --is-ancestor origin/main HEAD; then
+            echo "::error::$SOURCE is missing commits from main. Merge the back-merge PR first."; exit 1
+          fi
+
+      - name: Work out the version
+        id: v
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          LATEST=$(git tag --list 'v[0-9]*' --sort=-v:refname | head -1)
+          VERSION=$(python3 tools/release/release_notes.py next-version --latest "${LATEST:-v0.0.0}" --bump "$BUMP")
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "::error::Tag v$VERSION already exists."; exit 1
+          fi
+          { echo "version=$VERSION"; echo "tag=v$VERSION"; echo "branch=release/v$VERSION"; echo "previous=$LATEST"; } >> "$GITHUB_OUTPUT"
+
+      - name: Build bilingual notes and the readiness brief
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          PREVIOUS: ${{ steps.v.outputs.previous }}
+          BUMP: ${{ inputs.bump }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 tools/release/release_notes.py notes --version "$VERSION" --previous "$PREVIOUS" --since "$PREVIOUS" \
+            --project "$PROJECT_NAME" --repo "$REPO" --bump "$BUMP" --out-dir "$RUNNER_TEMP/out" --notes-dir .release/notes
+          python3 tools/release/release_notes.py readiness --since "$PREVIOUS" > "$RUNNER_TEMP/out/READINESS.md"
+          if [ -f .release/post-deploy-checklist.md ]; then
+            { echo; echo "### Project-specific checks"; cat .release/post-deploy-checklist.md; } >> "$RUNNER_TEMP/out/READINESS.md"
+          fi
+          {
+            echo "# Release v$VERSION (dry run: ${{ inputs.dry_run }})"
+            cat "$RUNNER_TEMP/out/READINESS.md"
+            echo; echo "---"; echo "## Release notes preview"; echo
+            cat "$RUNNER_TEMP/out/RELEASE_NOTES.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create the release branch (bump, changelog, no tag yet)
+        id: branch
+        if: ${{ !inputs.dry_run }}
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          TAG: ${{ steps.v.outputs.tag }}
+          BRANCH: ${{ steps.v.outputs.branch }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          if [ -x .release/bump.sh ]; then VERSION="$VERSION" .release/bump.sh
+          elif [ -f package.json ]; then npm pkg set version="$VERSION"; fi
+          python3 tools/release/release_notes.py changelog --file CHANGELOG.md --entry "$RUNNER_TEMP/out/RELEASE_NOTES.en.md"
+          rm -rf .release/notes   # consumed by this release; the next one starts clean
+          git add -A
+          git commit -m "chore(release): $TAG"
+          git push origin "$BRANCH"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !inputs.dry_run }}
+        with:
+          name: release-out
+          path: ${{ runner.temp }}/out/
+          retention-days: 7
+
+  deploy:
+    needs: prepare
+    if: ${{ !inputs.dry_run && !inputs.skip_deploy }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production # add required reviewers here if your plan allows
+    permissions:
+      contents: read
+      id-token: write # keyless cloud auth, if your deploy uses it
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+      - name: Deploy the release commit
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_SHA: ${{ needs.prepare.outputs.sha }}
+        run: |
+          if [ ! -x .release/deploy.sh ]; then
+            echo "::error::No executable .release/deploy.sh. Add your deploy there, or run with skip_deploy."; exit 1
+          fi
+          .release/deploy.sh
+
+  finalize:
+    needs: [prepare, deploy]
+    # Only when the deploy succeeded (or was skipped on purpose).
+    if: ${{ !inputs.dry_run && needs.prepare.result == 'success' && (needs.deploy.result == 'success' || needs.deploy.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-out
+          path: out
+      - name: Tag, merge to main, publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          BRANCH: ${{ needs.prepare.outputs.branch }}
+          SHA: ${{ needs.prepare.outputs.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" "$SHA" -F out/RELEASE_NOTES.en.md
+          git push origin "$TAG"
+          gh pr create --repo "$REPO" --base main --head "$BRANCH" --title "chore(release): $TAG" --body-file out/RELEASE_NOTES.md
+          if gh pr merge "$BRANCH" --repo "$REPO" --merge --delete-branch; then
+            echo "Merged $BRANCH into main."
+          else
+            echo "::warning::Release PR could not be merged automatically (required approvals or checks). Merge it by hand; the tag and release are already published."
+          fi
+          gh release create "$TAG" --repo "$REPO" --verify-tag --title "$TAG" --notes-file out/RELEASE_NOTES.md
+          gh issue create --repo "$REPO" --title "Post-deploy checks for $TAG" --body-file out/READINESS.md \
+            || echo "::warning::Could not create the checklist issue (issues disabled?). See out/READINESS.md in the run summary."
+
+  cleanup:
+    needs: [prepare, deploy]
+    if: ${{ always() && !inputs.dry_run && needs.prepare.result == 'success' && needs.deploy.result == 'failure' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Remove the release branch (deploy failed; no tag was created, main untouched)
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          BRANCH: ${{ needs.prepare.outputs.branch }}
+        run: |
+          git push origin --delete "$BRANCH" || true
+          echo "::error::Deploy of $TAG failed. The release branch was removed; there is no tag and main was not changed."

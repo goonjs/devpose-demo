@@ -1,0 +1,32 @@
+# Detector, not a block: GitHub branch protection is unavailable on this plan for private repos,
+# so fail loudly (and email the pusher) when `main` receives a commit that did not come from a PR.
+# If the plan is upgraded, enable branch protection (tools/repo-setup/protect-branches.sh) and keep this as a backstop.
+name: protected-branches
+
+on:
+  push:
+    branches: [main, staging, dev]  # list only the branches this repo has
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  detect-direct-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Require an associated pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          # The PR link can lag a few seconds behind the push, so retry before failing.
+          for _ in 1 2 3 4; do
+            n=$(gh api "repos/$REPO/commits/$SHA/pulls" --jq 'length')
+            if [ "$n" -gt 0 ]; then echo "ok: $SHA belongs to $n pull request(s)"; exit 0; fi
+            sleep 5
+          done
+          echo "::error title=Direct push to main::$SHA is on main but belongs to no pull request. Open a PR next time; see AGENTS.md."
+          exit 1

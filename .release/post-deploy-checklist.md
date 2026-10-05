@@ -1,0 +1,2 @@
+- [ ] Open the demo page and confirm the greeting shows
+- [ ] Confirm the version shown matches the release

@@ -1,0 +1,64 @@
+# Promotion dev -> staging by pull request (standards 02): opens the PR, or updates its body, with every
+# commit and task ID included. Optionally merges it (merge commit) when the repo has no required
+# approvals or checks in the way. Only for dev -> staging -> main repos.
+name: promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      auto_merge:
+        description: Merge the promotion PR right away (merge commit) if allowed
+        type: boolean
+        default: false
+      dry_run:
+        description: Only show what would be promoted
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: promote
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Promote dev to staging
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTO_MERGE: ${{ inputs.auto_merge }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          git fetch origin dev staging
+          N=$(git rev-list --count origin/staging..origin/dev)
+          if [ "$N" -eq 0 ]; then echo "staging already has everything from dev."; exit 0; fi
+          {
+            echo "Promotes \`dev\` to \`staging\`. Merge with a **merge commit**."
+            echo
+            echo "### Included commits ($N)"
+            git log origin/staging..origin/dev --no-merges --format='- %s (%h)'
+            IDS=$(git log origin/staging..origin/dev --format='%s%n%b' | grep -oE '(STORY-[0-9]+\.[0-9]+|BUG-[0-9]+)' | sort -u | paste -sd' ' -)
+            [ -n "$IDS" ] && { echo; echo "### Task IDs"; echo "$IDS"; }
+          } > "$RUNNER_TEMP/body.md"
+          cat "$RUNNER_TEMP/body.md" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$DRY_RUN" = "true" ]; then echo "Dry run: nothing opened."; exit 0; fi
+
+          PR=$(gh pr list --base staging --head dev --state open --json number --jq '.[0].number')
+          if [ -z "$PR" ]; then
+            gh pr create --base staging --head dev --title "chore(release): promote dev to staging" --body-file "$RUNNER_TEMP/body.md"
+            PR=$(gh pr list --base staging --head dev --state open --json number --jq '.[0].number')
+          else
+            gh pr edit "$PR" --body-file "$RUNNER_TEMP/body.md"
+          fi
+          if [ "$AUTO_MERGE" = "true" ]; then
+            gh pr merge "$PR" --merge || echo "::warning::Could not merge PR #$PR (approvals or checks required). Merge it by hand."
+          fi
