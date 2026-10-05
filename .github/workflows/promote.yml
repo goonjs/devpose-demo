@@ -49,7 +49,8 @@ jobs:
             IDS=$(git log origin/staging..origin/dev --format='%s%n%b' | grep -oE '(STORY-[0-9]+\.[0-9]+|BUG-[0-9]+)' | sort -u | paste -sd' ' -)
             [ -n "$IDS" ] && { echo; echo "### Task IDs"; echo "$IDS"; }
           } > "$RUNNER_TEMP/body.md"
-          cat "$RUNNER_TEMP/body.md" >> "$GITHUB_STEP_SUMMARY"
+          # Also print to the log: `gh run view --log` cannot read step summaries.
+          tee -a "$GITHUB_STEP_SUMMARY" < "$RUNNER_TEMP/body.md"
           if [ "$DRY_RUN" = "true" ]; then echo "Dry run: nothing opened."; exit 0; fi
 
           PR=$(gh pr list --base staging --head dev --state open --json number --jq '.[0].number')
