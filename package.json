@@ -1,6 +1,8 @@
 {
   "name": "devpose-demo",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
-  "scripts": { "test": "node --test" }
+  "scripts": {
+    "test": "node --test"
+  }
 }
