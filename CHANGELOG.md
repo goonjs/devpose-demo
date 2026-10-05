@@ -1,5 +1,23 @@
 # Changelog
 
+## devpose-demo v0.1.1
+
+**Release date:** 2026-10-05 · **Release type:** Patch · **Previous version:** v0.1.0
+
+## Fixes
+
+- greet an empty name without crashing (#13) (app)
+
+## Maintenance
+
+- simulate a failing deploy (#11) (release)
+
+## Contributors
+
+- Chalat
+
+**Full changelog:** https://github.com/goonjs/devpose-demo/compare/v0.1.0...v0.1.1
+
 ## devpose-demo v0.1.0
 
 **Release date:** 2026-10-05 · **Release type:** Minor · **Previous version:** -
