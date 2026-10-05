@@ -1,0 +1,2 @@
+- Set the new environment variable `DEMO_API_URL` in every environment before deploying.
+- Run database migration `001_create_orders.sql` before the deploy. It only adds a new table, so the previous version keeps working.
