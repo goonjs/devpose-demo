@@ -107,7 +107,9 @@ jobs:
             cat "$RUNNER_TEMP/out/READINESS.md"
             echo; echo "---"; echo "## Release notes preview"; echo
             cat "$RUNNER_TEMP/out/RELEASE_NOTES.md"
-          } >> "$GITHUB_STEP_SUMMARY"
+          } > "$RUNNER_TEMP/out/SUMMARY.md"
+          # Also print to the log: `gh run view --log` cannot read step summaries.
+          tee -a "$GITHUB_STEP_SUMMARY" < "$RUNNER_TEMP/out/SUMMARY.md"
 
       - name: Create the release branch (bump, changelog, no tag yet)
         id: branch
