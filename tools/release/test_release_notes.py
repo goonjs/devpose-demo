@@ -5,8 +5,8 @@ import unittest
 import release_notes as rn
 
 
-def rec(subject, body="", author="Ann"):
-    return f"abc\x1f{author}\x1f{subject}\x1f{body}\x1e"
+def rec(subject, body="", author="Ann", email="ann@example.com"):
+    return f"abc\x1f{author}\x1f{email}\x1f{subject}\x1f{body}\x1e"
 
 
 class VersionTests(unittest.TestCase):
@@ -92,6 +92,16 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(a["runtime"], ["Dockerfile"])
         self.assertEqual(a["crons"], 1)
         self.assertEqual(a["breaking"], ["new api"])
+
+    def test_test_files_are_ignored(self):
+        added = [("tools/release/test_release_notes.py", "x = process.env.FAKE_TEST_KEY"),
+                 ("test/app.test.js", "process.env.ANOTHER_FAKE"),
+                 ("src/app.js", "process.env.REAL_KEY")]
+        self.assertEqual(rn.analyze(["src/app.js"], added, [])["env_names"], ["REAL_KEY"])
+
+    def test_commits_keep_the_author_email(self):
+        cs = rn.parse_commits(rec("fix: a", author="Chalat", email="C@Example.com"))
+        self.assertEqual(cs[0]["email"], "c@example.com")
 
     def test_render_always_has_questions_and_manual_checks(self):
         quiet = rn.render_readiness(rn.analyze(["README.md"], [], []), "v1.0.0", "HEAD")

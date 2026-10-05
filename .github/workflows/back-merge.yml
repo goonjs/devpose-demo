@@ -8,6 +8,7 @@ name: back-merge
 on:
   push:
     branches: [main, staging]
+  workflow_dispatch: # the release workflow starts this: pushes made with GITHUB_TOKEN do not trigger push workflows
 
 permissions:
   contents: read
