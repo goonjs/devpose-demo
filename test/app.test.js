@@ -13,3 +13,7 @@ test("greet trims the name", () => {
 test("farewell says goodbye", () => {
   assert.strictEqual(farewell("Acme"), "Goodbye, Acme!");
 });
+
+test("greet handles an empty name", () => {
+  assert.strictEqual(greet(""), "Hello!");
+});

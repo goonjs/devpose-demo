@@ -172,6 +172,7 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
+      actions: write # to start the back-merge workflow
     steps:
       - uses: actions/checkout@v4
         with:
@@ -201,6 +202,10 @@ jobs:
           gh release create "$TAG" --repo "$REPO" --verify-tag --title "$TAG" --notes-file out/RELEASE_NOTES.md
           gh issue create --repo "$REPO" --title "Post-deploy checks for $TAG" --body-file out/READINESS.md \
             || echo "::warning::Could not create the checklist issue (issues disabled?). See out/READINESS.md in the run summary."
+          # The merge above was made with GITHUB_TOKEN, which does not trigger the back-merge workflow
+          # on its own push to main, so start it explicitly.
+          gh workflow run back-merge.yml --repo "$REPO" --ref main \
+            || echo "::notice::No back-merge workflow to start (main-only repo?)."
 
   cleanup:
     needs: [prepare, deploy]
